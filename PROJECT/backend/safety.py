@@ -62,13 +62,17 @@ def norm(text: str) -> str:
 
 _norm = norm  # keeps older imports and tests working
 
+def _squash(text: str) -> str:
+    """Normalise, then drop all whitespace so lost or extra spaces can't cause a false drop."""
+    return re.sub(r"\s+", "", norm(text))
+
 
 def verify_quote(quote: str, chunk_text: str) -> bool:
-    """True only if the quote really appears in the chunk it cites."""
-    q = norm(quote)
+    """True only if the quote really appears in the chunk it cites (whitespace-insensitive)."""
+    q = _squash(quote)
     if len(q) < 8:  # too short to count as evidence
         return False
-    return q in norm(chunk_text)
+    return q in _squash(chunk_text)
 
 
 def filter_items(items, chunks: dict, require_type: bool = False):
@@ -87,6 +91,7 @@ def filter_items(items, chunks: dict, require_type: bool = False):
             continue
         if require_type:
             typ = str(it.get("type", "")).strip().lower()
+            typ = TYPE_ALIASES.get(typ, typ)
             if typ not in TYPES:
                 dropped += 1
                 continue
@@ -98,3 +103,13 @@ def filter_items(items, chunks: dict, require_type: bool = False):
         it["explanation"] = str(it.get("explanation", "")).strip()
         kept.append(it)
     return kept, dropped
+  
+
+
+# Model sometimes invents near-synonyms of the allowed types. Map them in code.
+TYPE_ALIASES = {
+    "restriction": "obligation",
+    "prohibition": "obligation",
+    "responsibility": "obligation",
+    "duty": "obligation",
+}

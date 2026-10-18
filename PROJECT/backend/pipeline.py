@@ -12,7 +12,7 @@ import safety
 
 MODEL = os.getenv("GEMMA_MODEL", "gemma4:e2b")
 BATCH_CHARS = int(os.getenv("BATCH_CHARS", "5000"))  # chunk text per Gemma call
-MAX_ITEMS = 20
+MAX_ITEMS = 120
 TYPES = {"obligation", "right", "deadline", "penalty", "termination", "concern"}
 
 CONCERN_CUES = re.compile(
@@ -77,10 +77,12 @@ Return JSON in exactly this shape:
 {"items": [{"type": "obligation|right|deadline|penalty|termination|concern",
             "explanation": "one or two plain sentences",
             "chunk_id": "e.g. P1-C3",
-            "quote": "exact words copied from that chunk, under 40 words"}]}
+            "quote": "exact words copied from that chunk, under 25 words, copied exactly"}]}
 
 Rules:
 - Include only key terms: money, deposits, deadlines, penalties, termination, responsibilities, restrictions.
+- "type" must be exactly one of: obligation, right, deadline, penalty, termination, concern.
+  Prohibitions and restrictions are type "obligation".
 - Use type "concern" ONLY when the wording itself is vague, undefined, one-sided or unusual
   (for example "reasonable charges" with no definition, "sole discretion", no amount or deadline given).
   The explanation must name that specific problem, for example: "'Reasonable charges' is not defined."
@@ -101,6 +103,7 @@ tell please give""".split())
 
 # ---------- parsing and chunking ----------
 def _clean(text: str) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)  # control chars like \x07 bullets
     return re.sub(r"\s+", " ", text).strip()
 
 def _split_long(text: str, limit: int = 600):
@@ -233,6 +236,7 @@ def analyze(chunks: dict) -> dict:
     items += vagueness_items(chunks, items)
     order = {cid: n for n, cid in enumerate(chunks)}
     items.sort(key=lambda i: (i["label"] != "concern", order.get(i["chunk_id"], 0)))  # concerns first, then document order
+    capped = len(items) > MAX_ITEMS
     items = items[:MAX_ITEMS]
 
     summary = ""
@@ -245,7 +249,7 @@ def analyze(chunks: dict) -> dict:
         "summary": summary or "A summary could not be generated. See the items below.",
         "items": items,
         "dropped_unverified": dropped,
-        "truncated": failed > 0,  # True only if a batch failed even after a retry
+        "truncated": failed > 0 or capped,  # a batch failed after retry, or the item cap cut results
     }
 
 

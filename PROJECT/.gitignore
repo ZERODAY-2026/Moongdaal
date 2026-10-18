@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.next/
+node_modules/
+out/
+
+.env
+.env.*
+
+evidence/*.json
+evidence/*.log

@@ -113,3 +113,13 @@ TYPE_ALIASES = {
     "responsibility": "obligation",
     "duty": "obligation",
 }
+
+_VERDICT_OUT = re.compile(
+    r"enforceab|\billegal|\bunlawful|\blegally (valid|binding)|\b(void|voidable|invalid)\b", re.I
+)
+
+
+def strip_verdicts(text: str) -> str:
+    """Drop sentences in model-written text that sound like legal verdicts."""
+    parts = re.split(r"(?<=[.!?])\s+", text or "")
+    return " ".join(p for p in parts if not _VERDICT_OUT.search(p)).strip()

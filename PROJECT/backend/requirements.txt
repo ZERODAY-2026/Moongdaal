@@ -6,3 +6,5 @@ rank-bm25
 langchain-ollama
 pydantic
 pytest
+pytesseract
+pillow

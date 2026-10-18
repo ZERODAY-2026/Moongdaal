@@ -1,3 +1,8 @@
 fastapi
-uvicorn[standard]
-pypdf
+uvicorn
+python-multipart
+pymupdf
+rank-bm25
+langchain-ollama
+pydantic
+pytest

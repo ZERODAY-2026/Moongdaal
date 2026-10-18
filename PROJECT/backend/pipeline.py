@@ -365,6 +365,124 @@ def snap_quote(quote: str, chunk: str) -> str:
 
 CALL_LOG = []  # numbers only, never document text
 
+# ---------- logic: conflicting values ----------
+_NUMWORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+             "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "thirty": 30, "sixty": 60, "ninety": 90}
+_NW = "|".join(_NUMWORDS)
+_UNIT = {"day": "day", "days": "day", "week": "week", "weeks": "week", "month": "month", "months": "month",
+         "year": "year", "years": "year", "hour": "hour", "hours": "hour", "%": "percent"}
+CONFLICT_PAIRS = int(os.getenv("CONFLICT_PAIRS", "12"))  # max pairs sent to Gemma
+
+
+def _facts(text: str) -> dict:
+    """unit -> set of numbers, e.g. {'day': {'30'}, 'money': {'54000'}}."""
+    t = text.lower()
+    t = re.sub(rf"\b({_NW})\b\s*\((\d+)\)", r"\2", t)
+    t = re.sub(rf"\b({_NW})\b", lambda m: str(_NUMWORDS[m.group(1)]), t)
+    out = {}
+    for m in re.finditer(r"(\d[\d,]*(?:\.\d+)?)(st|nd|rd|th)?\s*(%|days?|weeks?|months?|years?|hours?)?", t):
+        unit = _UNIT.get(m.group(3) or "")
+        if m.group(2) and unit == "day":
+            unit = "dayofmonth"  # "5th day of the month" is a date, not a duration
+        if unit:
+            out.setdefault(unit, set()).add(m.group(1).replace(",", ""))
+    for m in re.finditer(r"(?:₹|rs\.?|inr|\$)\s*(\d[\d,]*)", t):
+        out.setdefault("money", set()).add(m.group(1).replace(",", ""))
+    return out
+
+
+def _num_sentence(text: str):
+    for s in re.split(r"(?<=[.!?])\s+", text):
+        if re.search(rf"\d|\b(?:{_NW})\b", s, re.I) and safety.verify_quote(s, text):
+            return s
+    return None
+
+
+CONFLICT_PROMPT = """Two passages from the same document.
+
+[{IDA}] {A}
+[{IDB}] {B}
+
+Do these passages give DIFFERENT values for the SAME thing (the same deadline, period, amount or rate),
+so a reader cannot tell which one applies?
+- Different things are NOT a conflict (for example a notice period and a lock-in period, or a deposit and a rent).
+- A passage that calculates or applies an earlier value (for example rent after an increase) is NOT a conflict.
+Return JSON only: {"conflict": true or false, "what": "one plain sentence naming the thing and both values, or empty"}"""
+
+
+def conflict_items(chunks: dict) -> list:
+    facts = {c: _facts(t) for c, t in chunks.items()}
+    ids = [c for c in chunks if facts[c]]
+    cand = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1:]
+            if any(u in facts[b] and not (facts[a][u] & facts[b][u]) for u in facts[a])]
+    if not cand:
+        return []
+    try:
+        vecs, pos = _chunk_vectors(chunks), {c: i for i, c in enumerate(chunks)}
+        sims = [float(vecs[pos[a]] @ vecs[pos[b]]) for a, b in cand]
+    except Exception:  # embeddings unavailable: word overlap instead
+        def jac(a, b):
+            A, B = set(_tokens(chunks[a])), set(_tokens(chunks[b]))
+            return len(A & B) / (len(A | B) or 1)
+        sims = [jac(a, b) for a, b in cand]
+    
+    except Exception:  # embeddings unavailable: word overlap instead
+        def jac(a, b):
+            A, B = set(_tokens(chunks[a])), set(_tokens(chunks[b]))
+            return len(A & B) / (len(A | B) or 1)
+        sims = [jac(a, b) for a, b in cand]
+
+    def units(a, b):
+        return [u for u in facts[a] if u in facts[b] and not (facts[a][u] & facts[b][u])]
+    order = [p for _, p in sorted(zip(sims, cand), key=lambda x: -x[0])]
+    ranked, per = [], {}
+    for p in order:  # best 3 pairs per unit, so one busy unit can't crowd out the others
+        us = units(*p)
+        if any(per.get(u, 0) < 3 for u in us):
+            ranked.append(p)
+            for u in us:
+                per[u] = per.get(u, 0) + 1
+    ranked = ranked[:CONFLICT_PAIRS]
+   
+    out = []
+    for a, b in ranked:
+        prompt = CONFLICT_PROMPT.replace("{IDA}", a).replace("{IDB}", b).replace("{A}", chunks[a]).replace("{B}", chunks[b])
+        res = _call(prompt)
+        what = str((res or {}).get("what", "")).strip()
+        if not res or res.get("conflict") is not True or not what:
+            continue
+        qa, qb = _num_sentence(chunks[a]), _num_sentence(chunks[b])
+        if qa and qb:
+            out.append({"type": "concern", "label": "concern", "chunk_id": a, "quote": qa,
+                        "explanation": f"Possible conflict: {what}",
+                        "related_chunk_id": b, "related_quote": qb})
+    return out
+
+
+# ---------- plain-language term explanation ----------
+def explain_term(term: str, base: str, relevant: dict):
+    hint = f"Base your meaning on this definition: {base}" if base else ""
+    prompt = f"""A reader asks what "{term}" means. Passages from their document are at the end.
+
+Return JSON in exactly this shape:
+{{"in_document": true or false,
+  "meaning": "everyday meaning of the term in at most 2 short sentences, for someone with no legal or finance background. No advice, no legal conclusions.",
+  "in_this_document": "what the passages say about it in 1 to 2 sentences, or empty",
+  "evidence": [{{"chunk_id": "e.g. P1-C3", "quote": "exact words copied from ONE chunk, max 20 words", "label": "stated"}}]}}
+
+Rules:
+- "meaning" explains the word itself and may use general knowledge. {hint}
+- "in_this_document" and "evidence" use ONLY the passages. If they never mention the term, set in_document false, in_this_document "" and evidence [].
+
+<document>
+{_format(relevant)}
+</document>
+Return JSON only."""
+    res = _call(prompt)
+    if isinstance(res, dict):
+        res["meaning"] = safety.strip_verdicts(str(res.get("meaning", "")))
+        res["in_this_document"] = safety.strip_verdicts(str(res.get("in_this_document", "")))
+    return res
 
 def _call(user_prompt: str, retries: int = 1):
     """Connection errors propagate (main.py turns them into a 503). Bad JSON returns None."""
@@ -448,6 +566,10 @@ def analyze(chunks: dict) -> dict:
                 items.append(it)
 
     items += vagueness_items(chunks, items)  # backstop runs on every chunk, it is cheap
+    try:
+        items += conflict_items(chunks)  # logic pass: same thing, different values
+    except Exception:
+        pass  # never let this pass break the main analysis
     order = {cid: n for n, cid in enumerate(chunks)}
     items.sort(key=lambda i: (i["label"] != "concern", order.get(i["chunk_id"], 0)))
     capped = len(items) > MAX_ITEMS

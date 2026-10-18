@@ -22,6 +22,36 @@ CONCERN_CUES = re.compile(
     re.I,
 )
 
+VAGUE_RULES = [
+    (r"reasonable (charges|time|notice|amount|costs?|expenses)", "'Reasonable' is not defined, so the document does not say what counts."),
+    (r"in due course|from time to time", "No time frame or schedule is given."),
+    (r"as (he|she|it|the landlord|the owner|the lessor) (deems|thinks|considers) (fit|necessary|appropriate)|as decided by the (landlord|owner|lessor)", "The amount or decision is left to one party, with no limit stated."),
+    (r"sole discretion|absolute discretion", "The decision is left entirely to one party."),
+    (r"(penalty|fine|interest|charges?) may be (levied|imposed|charged)", "No amount or rate is stated."),
+]
+
+
+def vagueness_items(chunks: dict, items: list) -> list:
+    """Deterministic backstop: flag standard vague wording the small model may skip."""
+    have = {i["chunk_id"] for i in items if i["type"] == "concern"}
+    out = []
+    for cid, text in chunks.items():
+        if cid in have:
+            continue
+        hits = [(m, why) for pat, why in VAGUE_RULES for m in [re.search(pat, text, re.I)] if m]
+        if not hits:
+            continue
+        sentence = next((s for s in re.split(r"(?<=[.!?])\s+", text) if hits[0][0].group(0).lower() in s.lower()), None)
+        if not sentence or not safety.verify_quote(sentence, text):
+            continue
+        phrases = ", ".join(f"'{m.group(0)}'" for m, _ in hits)
+        out.append({
+            "type": "concern", "label": "concern", "chunk_id": cid, "quote": sentence,
+            "explanation": f"Vague wording: {phrases}. " + " ".join(dict.fromkeys(w for _, w in hits)),
+        })
+    return out
+  
+  
 llm = ChatOllama(
     model=MODEL,
     temperature=0,
@@ -200,7 +230,9 @@ def analyze(chunks: dict) -> dict:
                 seen.add(key)
                 items.append(it)
 
-    items.sort(key=lambda i: i["label"] != "concern")  # concerns first, stable otherwise
+    items += vagueness_items(chunks, items)
+    order = {cid: n for n, cid in enumerate(chunks)}
+    items.sort(key=lambda i: (i["label"] != "concern", order.get(i["chunk_id"], 0)))  # concerns first, then document order
     items = items[:MAX_ITEMS]
 
     summary = ""

@@ -1,16 +1,25 @@
+# Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
 
-.next/
+# Node / Next.js
 node_modules/
+.next/
 out/
+*.tsbuildinfo
+frontend/next-env.d.ts
 
+# Secrets (never commit)
 .env
 .env.*
+!.env.example
 
-evidence/*.json
-evidence/*.log
-# Next.js generated file
-frontend/next-env.d.ts
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Private test documents (only the self-written sample is committed)
+samples/private/

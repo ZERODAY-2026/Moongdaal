@@ -1,0 +1,12 @@
+{
+  "status": "answered",
+  "answer": "The Tenant has paid a refundable security deposit of Rs. 54,000.",
+  "evidence": [
+    {
+      "chunk_id": "P1-C3",
+      "quote": "The Tenant has paid a refundable security deposit of Rs. 54,000.",
+      "label": "stated"
+    }
+  ],
+  "disclaimer": "This is a preliminary explanation of the document's text. It is not legal advice and cannot decide whether anything is valid or enforceable."
+}

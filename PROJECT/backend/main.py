@@ -66,6 +66,8 @@ async def ask(q: Question):
                 "evidence": [], "disclaimer": safety.DISCLAIMER}
 
     evidence, _ = safety.filter_items(result.get("evidence", []), STATE["chunks"])
+    for e in evidence:
+        e.pop("explanation", None)
     if not evidence:  # no verifiable support, so the answer is not shown
         return {"status": "silent",
                 "answer": safety.SILENT + " (No verifiable passage was found.)",

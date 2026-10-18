@@ -12,3 +12,5 @@ out/
 
 evidence/*.json
 evidence/*.log
+# Next.js generated file
+frontend/next-env.d.ts

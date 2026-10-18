@@ -11,6 +11,11 @@ from pydantic import BaseModel
 import pipeline
 import safety
 
+import hashlib
+
+CACHE = {}  # sha256 of file bytes -> parsed and analysed result. RAM only, cleared on restart.
+CACHE_MAX = 3
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +41,17 @@ class Question(BaseModel):
 @app.post("/analyze")
 async def analyze(file: UploadFile):
     data = await file.read()  # never written to disk
+    key = hashlib.sha256(data).hexdigest()
+    if key in CACHE:
+        hit = CACHE[key]
+        STATE["chunks"] = hit["chunks"]
+        pipeline.clear_cache()
+        try:  # embeddings are rebuilt, which takes seconds and is cheaper than a Gemma pass
+            await run_in_threadpool(pipeline._chunk_vectors, hit["chunks"])
+        except Exception:
+            pass
+        return {**hit["result"], "chunks": hit["chunks"], "disclaimer": safety.DISCLAIMER,
+                "ocr_pages": hit["ocr_pages"], "cached": True}
     try:
         chunks = await run_in_threadpool(pipeline.make_chunks, data, file.filename or "")
     except pipeline.OCRUnavailable as e:
@@ -57,8 +73,13 @@ async def analyze(file: UploadFile):
     except Exception:
         pass
 
+    ocr_pages = list(pipeline.OCR_PAGES)
+    if not result["truncated"]:  # cache only complete runs
+        if len(CACHE) >= CACHE_MAX:
+            CACHE.pop(next(iter(CACHE)))  # drop the oldest
+        CACHE[key] = {"chunks": chunks, "result": result, "ocr_pages": ocr_pages}
     return {**result, "chunks": chunks, "disclaimer": safety.DISCLAIMER,
-            "ocr_pages": list(pipeline.OCR_PAGES)}
+            "ocr_pages": ocr_pages, "cached": False}
 
 
 @app.post("/ask")
@@ -101,6 +122,7 @@ async def ask(q: Question):
 @app.delete("/session")
 async def clear():
     STATE["chunks"] = {}
+    CACHE.clear()
     pipeline.clear_cache()
     pipeline.OCR_PAGES.clear()
     return {"cleared": True}
